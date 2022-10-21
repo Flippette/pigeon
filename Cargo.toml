@@ -1,0 +1,18 @@
+[workspace]
+members = [
+  "crates/pigeon-server",
+  "crates/pigeon-client-egui",
+]
+
+[workspace.dependencies]
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+color-eyre = "0.6"
+tracing = "0.1"
+thiserror = "1"
+parking_lot = "0.12"
+serde_json = "1"
+axum = "0.5"
+tracing-subscriber = "0.3"
+reqwest = "0.11"
+eframe = "0.19"

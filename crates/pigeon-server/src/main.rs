@@ -20,8 +20,8 @@ use pigeon_server::*;
 
 const USERS_FILE: &str = "users.json";
 const MESSAGES_FILE: &str = "messages.json";
-const SALT: [u8; 16] = *b"Hello, world!!!!";
-const BCRYPT_COST: u32 = 12;
+const BCRYPT_SALT: [u8; 16] = *b"Hello, world!!!!";
+const BCRYPT_COST: u32 = 14;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -102,7 +102,7 @@ async fn register(
         return Err(StatusCode::CONFLICT);
     }
 
-    let hash = match bcrypt::hash_with_salt(reg_info.password, BCRYPT_COST, SALT) {
+    let hash = match bcrypt::hash_with_salt(reg_info.password, BCRYPT_COST, BCRYPT_SALT) {
         Ok(hash) => hash,
         Err(_) => return Err(StatusCode::INTERNAL_SERVER_ERROR),
     }
@@ -127,8 +127,6 @@ async fn send(
         &state.read(),
         &send_info.message.author,
         &send_info.password,
-        BCRYPT_COST,
-        SALT,
     )
     .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
     {
@@ -158,14 +156,8 @@ async fn recv(
     Json(recv_info): Json<RecvInfo>,
     Extension(state): Extension<Arc<RwLock<State>>>,
 ) -> Result<Json<Vec<(u64, Message)>>, StatusCode> {
-    if !auth(
-        &state.read(),
-        &recv_info.username,
-        &recv_info.password,
-        BCRYPT_COST,
-        SALT,
-    )
-    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+    if !auth(&state.read(), &recv_info.username, &recv_info.password)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
     {
         return Err(StatusCode::UNAUTHORIZED);
     }

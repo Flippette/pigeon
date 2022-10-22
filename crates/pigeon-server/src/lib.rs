@@ -43,13 +43,6 @@ impl State {
     }
 }
 
-pub fn auth(
-    state: &State,
-    username: &str,
-    password: &str,
-    cost: u32,
-    salt: [u8; 16],
-) -> Result<bool> {
-    let hash = bcrypt::hash_with_salt(password, cost, salt)?.to_string();
-    Ok(state.users.contains_key(username) && state.users[username] == hash)
+pub fn auth(state: &State, username: &str, password: &str) -> Result<bool> {
+    Ok(state.users.contains_key(username) && bcrypt::verify(password, &state.users[username])?)
 }

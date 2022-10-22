@@ -1,14 +1,13 @@
 mod eyre;
 
 use std::{
-    collections::{BTreeMap, HashSet},
+    collections::{BTreeMap, HashMap},
     fs,
     sync::Arc,
     time::UNIX_EPOCH,
 };
 
 use axum::{
-    extract::{Path, Query},
     http::StatusCode,
     routing::{get, post},
     Extension, Json, Router, Server,
@@ -21,6 +20,8 @@ use pigeon_server::*;
 
 const USERS_FILE: &str = "users.json";
 const MESSAGES_FILE: &str = "messages.json";
+const SALT: [u8; 16] = *b"Hello, world!!!!";
+const BCRYPT_COST: u32 = 12;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -39,7 +40,7 @@ async fn main() -> Result<()> {
         }))
         .unwrap_or_else(|err| {
             tracing::warn!("Error parsing {}: {}, using new userlist", USERS_FILE, err);
-            HashSet::new()
+            HashMap::new()
         });
 
         let messages =
@@ -65,7 +66,7 @@ async fn main() -> Result<()> {
 
     let app = Router::new()
         .route("/", get(|| async { "Hello, world!" }))
-        .route("/register/:username", post(register))
+        .route("/register", post(register))
         .route("/message", post(send).get(recv))
         .layer(Extension(Arc::clone(&state)));
 
@@ -87,42 +88,85 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
+#[derive(Deserialize)]
+struct RegInfo {
+    username: String,
+    password: String,
+}
+
 async fn register(
-    Path(username): Path<String>,
+    Json(reg_info): Json<RegInfo>,
     Extension(state): Extension<Arc<RwLock<State>>>,
 ) -> Result<(), StatusCode> {
-    if state.write().users.insert(username) {
-        Ok(())
-    } else {
-        Err(StatusCode::CONFLICT)
+    if state.read().users.contains_key(&reg_info.username) {
+        return Err(StatusCode::CONFLICT);
     }
+
+    let hash = match bcrypt::hash_with_salt(reg_info.password, BCRYPT_COST, SALT) {
+        Ok(hash) => hash,
+        Err(_) => return Err(StatusCode::INTERNAL_SERVER_ERROR),
+    }
+    .to_string();
+
+    state.write().users.insert(reg_info.username, hash);
+
+    Ok(())
+}
+
+#[derive(Deserialize)]
+struct SendInfo {
+    password: String,
+    message: Message,
 }
 
 async fn send(
-    Json(message): Json<Message>,
+    Json(send_info): Json<SendInfo>,
     Extension(state): Extension<Arc<RwLock<State>>>,
 ) -> Result<(), StatusCode> {
-    if !state.read().users.contains(&message.author) {
+    if !auth(
+        &state.read(),
+        &send_info.message.author,
+        &send_info.password,
+        BCRYPT_COST,
+        SALT,
+    )
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+    {
         return Err(StatusCode::UNAUTHORIZED);
+    }
+
+    for user in &send_info.message.recipients {
+        if !state.read().users.contains_key(user) {
+            return Err(StatusCode::NOT_ACCEPTABLE);
+        }
     }
 
     state
         .write()
-        .add_message_at_present(message)
+        .add_message_at_present(send_info.message)
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
 }
 
 #[derive(Deserialize)]
 struct RecvInfo {
     username: String,
+    password: String,
     timestamp: u64,
 }
 
 async fn recv(
-    Query(recv_info): Query<RecvInfo>,
+    Json(recv_info): Json<RecvInfo>,
     Extension(state): Extension<Arc<RwLock<State>>>,
 ) -> Result<Json<Vec<(u64, Message)>>, StatusCode> {
-    if !state.read().users.contains(&recv_info.username) {
+    if !auth(
+        &state.read(),
+        &recv_info.username,
+        &recv_info.password,
+        BCRYPT_COST,
+        SALT,
+    )
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+    {
         return Err(StatusCode::UNAUTHORIZED);
     }
 
@@ -133,7 +177,11 @@ async fn recv(
             .messages
             .iter()
             .filter(|(&ts, _)| ts < current_time && ts > recv_info.timestamp)
-            .flat_map(|(&ts, msgs)| msgs.iter().map(move |msg| (ts, msg.clone())))
+            .flat_map(|(&ts, msgs)| {
+                msgs.iter()
+                    .filter(|msg| msg.recipients.contains(&recv_info.username))
+                    .map(move |msg| (ts, msg.clone()))
+            })
             .collect::<Vec<_>>(),
     ))
 }
